@@ -35,10 +35,8 @@ export class LiveAudioManager {
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: {
-          // 'Puck' is a clear masculine voice. 
-          // Other options: 'Fenrir' (Deep), 'Charon' (Senior). 
-          // Puck is often best for standard adult male personas.
-          voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } },
+          // 'Fenrir' is a deep, clearly masculine voice.
+          voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Fenrir' } },
         },
         systemInstruction: this.systemInstruction,
         inputAudioTranscription: {},
