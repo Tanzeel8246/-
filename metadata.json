@@ -1,0 +1,8 @@
+{
+  "name": "Tanzil AI - Voice Enabled",
+  "description": "A high-fidelity clone of a modern AI chat interface with real-time voice interaction.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
