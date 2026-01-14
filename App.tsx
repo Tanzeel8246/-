@@ -1,309 +1,301 @@
 
-import React, { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
 import ChatMessage from './components/ChatMessage';
 import VoiceMode from './components/VoiceMode';
 import { ChatThread, Message } from './types';
-import { sendMessageStream, SYSTEM_INSTRUCTION } from './services/geminiService';
+import { sendMessageStream, generateDesign } from './services/geminiService';
 import { LiveAudioManager } from './services/liveService';
+import { TANZIL_AVATAR_BASE64 } from './constants';
 
-const App: React.FC = () => {
-  const [threads, setThreads] = useState<ChatThread[]>([]);
-  const [activeThreadId, setActiveThreadId] = useState<string>('');
+const STORAGE_KEY_THREADS = "tanzeel_ai_threads_v5";
+const STORAGE_KEY_ACTIVE_ID = "tanzeel_ai_active_id_v5";
+const STORAGE_KEY_USAGE = "tanzeel_usage_v5";
+
+const App = () => {
+  const [threads, setThreads] = useState<ChatThread[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_THREADS);
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+
+  const [activeThreadId, setActiveThreadId] = useState<string>(() => localStorage.getItem(STORAGE_KEY_ACTIVE_ID) || '');
+  const [usage, setUsage] = useState<{ count: number, firstRequestTime: number }>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_USAGE);
+      return saved ? JSON.parse(saved) : { count: 0, firstRequestTime: 0 };
+    } catch (e) {
+      return { count: 0, firstRequestTime: 0 };
+    }
+  });
+
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  // Voice State
+  const [mode, setMode] = useState<'chat' | 'graphic' | 'web'>('chat');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [resetLabel, setResetLabel] = useState<string | null>(null);
+  
+  const scrollBottomRef = useRef<HTMLDivElement>(null);
   const [isVoiceOpen, setIsVoiceOpen] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState<'connecting' | 'listening' | 'speaking' | 'idle'>('idle');
   const [voiceTranscript, setVoiceTranscript] = useState('');
   const audioManagerRef = useRef<LiveAudioManager | null>(null);
 
   useEffect(() => {
-    const initialId = Date.now().toString();
-    const initialThread: ChatThread = {
-      id: initialId,
-      title: 'New Conversation',
-      messages: [],
-      updatedAt: Date.now()
-    };
-    setThreads([initialThread]);
-    setActiveThreadId(initialId);
-  }, []);
-
-  const activeThread = threads.find(t => t.id === activeThreadId);
-
-  const scrollToBottom = () => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  };
+    localStorage.setItem(STORAGE_KEY_THREADS, JSON.stringify(threads));
+    localStorage.setItem(STORAGE_KEY_USAGE, JSON.stringify(usage));
+  }, [threads, usage]);
 
   useEffect(() => {
-    scrollToBottom();
-  }, [activeThread?.messages, isLoading]);
+    if (activeThreadId) localStorage.setItem(STORAGE_KEY_ACTIVE_ID, activeThreadId);
+  }, [activeThreadId]);
+
+  // Timer for reset label
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (usage.firstRequestTime > 0) {
+        const cycle = 24 * 60 * 60 * 1000;
+        const remaining = cycle - (Date.now() - usage.firstRequestTime);
+        if (remaining > 0) {
+          const hours = Math.floor(remaining / (1000 * 60 * 60));
+          const mins = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
+          setResetLabel(`${hours}h ${mins}m remaining`);
+        } else {
+          setResetLabel(null);
+        }
+      }
+    }, 10000);
+    return () => clearInterval(timer);
+  }, [usage]);
+
+  useEffect(() => {
+    if (threads.length === 0) {
+      handleNewChat();
+    } else if (!activeThreadId) {
+      setActiveThreadId(threads[0].id);
+    }
+  }, []);
+
+  useEffect(() => {
+    const checkSize = () => {
+      if (window.innerWidth >= 1024) setIsSidebarOpen(true);
+      else setIsSidebarOpen(false);
+    };
+    checkSize();
+    window.addEventListener('resize', checkSize);
+    return () => window.removeEventListener('resize', checkSize);
+  }, []);
+
+  useEffect(() => {
+    scrollBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [threads, isLoading]);
+
+  const handleNewChat = () => {
+    const id = Date.now().toString();
+    const newThread: ChatThread = { id, title: 'New chat', messages: [], updatedAt: Date.now() };
+    setThreads(prev => [newThread, ...prev]);
+    setActiveThreadId(id);
+    if (window.innerWidth < 1024) setIsSidebarOpen(false);
+  };
+
+  const checkQuota = () => {
+    const now = Date.now();
+    const cycle = 24 * 60 * 60 * 1000;
+    
+    if (usage.firstRequestTime > 0 && now - usage.firstRequestTime > cycle) {
+      return { allowed: true, reset: true };
+    }
+    
+    if (usage.count >= 2) {
+      return { allowed: false };
+    }
+    
+    return { allowed: true, reset: false };
+  };
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: input,
-      timestamp: Date.now()
-    };
+    if (mode === 'graphic' || mode === 'web') {
+      const quota = checkQuota();
+      if (!quota.allowed) {
+        alert(`Limit Reached! You have used your 2 premium requests. Reset in: ${resetLabel || 'shortly'}`);
+        setMode('chat');
+        return;
+      }
+      
+      const newUsage = quota.reset 
+        ? { count: 1, firstRequestTime: Date.now() } 
+        : { count: usage.count + 1, firstRequestTime: usage.firstRequestTime || Date.now() };
+      setUsage(newUsage);
+    }
 
+    const userMessage: Message = { id: Date.now().toString(), role: 'user', content: input, timestamp: Date.now() };
     const tempInput = input;
+    const currentMode = mode;
+    const currentThreadId = activeThreadId;
+    
     setInput('');
     setIsLoading(true);
 
-    setThreads(prev => prev.map(t => {
-      if (t.id === activeThreadId) {
-        const isFirstMessage = t.messages.length === 0;
-        return {
-          ...t,
-          title: isFirstMessage ? tempInput.slice(0, 30) + (tempInput.length > 30 ? '...' : '') : t.title,
-          messages: [...t.messages, userMessage],
-          updatedAt: Date.now()
-        };
-      }
-      return t;
-    }));
+    setThreads(prev => prev.map(t => t.id === currentThreadId ? {
+      ...t,
+      title: t.messages.length === 0 ? tempInput.substring(0, 30) : t.title,
+      messages: [...t.messages, userMessage],
+      updatedAt: Date.now()
+    } : t));
 
     try {
       const assistantId = (Date.now() + 1).toString();
-      
-      setThreads(prev => prev.map(t => {
-        if (t.id === activeThreadId) {
-          return {
-            ...t,
-            messages: [...t.messages, { id: assistantId, role: 'assistant', content: '', timestamp: Date.now() }]
-          };
-        }
-        return t;
-      }));
-
-      await sendMessageStream(tempInput, (fullText) => {
-        setThreads(prev => prev.map(t => {
-          if (t.id === activeThreadId) {
-            return {
-              ...t,
-              messages: t.messages.map(m => m.id === assistantId ? { ...m, content: fullText } : m)
-            };
-          }
-          return t;
-        }));
-      });
-
-    } catch (error) {
-      console.error("Failed to send message", error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const startVoiceChat = async () => {
-    setIsVoiceOpen(true);
-    setVoiceStatus('connecting');
-    setVoiceTranscript('');
-    
-    try {
-      audioManagerRef.current = new LiveAudioManager(SYSTEM_INSTRUCTION);
-      await audioManagerRef.current.start({
-        onOpen: () => setVoiceStatus('listening'),
-        onMessage: (text, isInput) => {
-          setVoiceTranscript(text);
-          setVoiceStatus(isInput ? 'listening' : 'speaking');
-          
-          // Sync voice transcript back to chat thread
-          if (text) {
-             const newMessage: Message = {
-                id: Date.now().toString(),
-                role: isInput ? 'user' : 'assistant',
-                content: text,
-                timestamp: Date.now()
-             };
-             setThreads(prev => prev.map(t => t.id === activeThreadId ? {
-                ...t,
-                messages: [...t.messages, newMessage],
-                updatedAt: Date.now()
-             } : t));
-          }
-        },
-        onInterrupted: () => setVoiceStatus('listening'),
-        onClose: () => {
-          setIsVoiceOpen(false);
-          setVoiceStatus('idle');
-        },
-        onError: () => setIsVoiceOpen(false)
-      });
-    } catch (err) {
-      console.error(err);
-      setIsVoiceOpen(false);
-    }
-  };
-
-  const stopVoiceChat = () => {
-    audioManagerRef.current?.stop();
-    setIsVoiceOpen(false);
-    setVoiceStatus('idle');
-  };
-
-  const createNewChat = () => {
-    const newId = Date.now().toString();
-    const newThread: ChatThread = {
-      id: newId,
-      title: 'New Conversation',
-      messages: [],
-      updatedAt: Date.now()
-    };
-    setThreads([newThread, ...threads]);
-    setActiveThreadId(newId);
-  };
-
-  const deleteThread = (id: string) => {
-    const newThreads = threads.filter(t => t.id !== id);
-    if (newThreads.length === 0) {
-      const initialId = Date.now().toString();
-      setThreads([{ id: initialId, title: 'New Conversation', messages: [], updatedAt: Date.now() }]);
-      setActiveThreadId(initialId);
-    } else {
-      setThreads(newThreads);
-      if (activeThreadId === id) setActiveThreadId(newThreads[0].id);
-    }
-  };
-
-  const clearMessages = () => {
-    if (!activeThreadId) return;
-    if (confirm('Clear all messages in this conversation?')) {
-      setThreads(prev => prev.map(t => t.id === activeThreadId ? { ...t, messages: [] } : t));
+      if (currentMode === 'graphic') {
+        const imageUrl = await generateDesign(tempInput);
+        const content = imageUrl ? `![Generated Design](${imageUrl})\n\n**Note:** Your daily design quota is now ${2 - (usage.count + 1)} remaining.` : "Failed to generate design.";
+        setThreads(prev => prev.map(t => t.id === currentThreadId ? { ...t, messages: [...t.messages, { id: assistantId, role: 'assistant', content, timestamp: Date.now() }] } : t));
+        setMode('chat');
+      } else {
+        setThreads(prev => prev.map(t => t.id === currentThreadId ? { ...t, messages: [...t.messages, { id: assistantId, role: 'assistant', content: '', timestamp: Date.now() }] } : t));
+        await sendMessageStream(tempInput, (chunk) => {
+          setThreads(prev => prev.map(t => t.id === currentThreadId ? { ...t, messages: t.messages.map(m => m.id === assistantId ? { ...m, content: chunk } : m) } : t));
+        });
+        setMode('chat');
+      }
+    } catch (e) { 
+      setThreads(prev => prev.map(t => t.id === currentThreadId ? { 
+        ...t, 
+        messages: [...t.messages, { id: 'error', role: 'assistant', content: "Connection Error. Please try again.", timestamp: Date.now() }] 
+      } : t));
+    } finally { 
+      setIsLoading(false); 
     }
   };
 
   return (
-    <div className="flex h-screen w-full bg-[#0d0d0d] font-sans">
-      <Sidebar 
-        threads={threads} 
-        activeThreadId={activeThreadId}
-        onNewChat={createNewChat}
-        onSelectThread={setActiveThreadId}
-        onDeleteThread={deleteThread}
-      />
-      
-      <main className="flex-1 flex flex-col relative overflow-hidden bg-[#121212]">
-        <VoiceMode 
-          isOpen={isVoiceOpen} 
-          onClose={stopVoiceChat} 
-          status={voiceStatus} 
-          transcript={voiceTranscript}
+    <div className="flex h-screen w-full bg-[#212121] overflow-hidden text-zinc-100 relative">
+      {isSidebarOpen && window.innerWidth < 1024 && (
+        <div className="fixed inset-0 bg-black/60 z-40 lg:hidden backdrop-blur-sm" onClick={() => setIsSidebarOpen(false)} />
+      )}
+
+      <aside className={`sidebar-transition fixed lg:relative z-50 h-full bg-[#171717] ${isSidebarOpen ? 'translate-x-0 w-[280px]' : '-translate-x-full lg:w-0'}`}>
+        <Sidebar 
+          threads={threads} 
+          activeThreadId={activeThreadId} 
+          onNewChat={handleNewChat} 
+          onSelectThread={(id) => { setActiveThreadId(id); if (window.innerWidth < 1024) setIsSidebarOpen(false); }} 
+          onDeleteThread={(id) => {
+            const filtered = threads.filter(t => t.id !== id);
+            setThreads(filtered);
+            if (activeThreadId === id) setActiveThreadId(filtered[0]?.id || '');
+          }} 
+          onClearAll={() => { if(confirm("This will permanently delete your browser history. Continue?")) setThreads([]); }}
+          avatarUrl={TANZIL_AVATAR_BASE64} 
         />
+      </aside>
 
-        {/* Header Bar */}
-        <div className="flex items-center justify-between p-4 border-b border-white/5 bg-[#121212]/80 backdrop-blur-md z-20">
-          <div className="flex items-center gap-4">
-            <button onClick={createNewChat} className="md:hidden text-zinc-400 p-1">
-               <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg>
-            </button>
-            <span className="font-semibold text-zinc-200 text-sm truncate max-w-[200px]">{activeThread?.title}</span>
-          </div>
+      <main className="flex-1 flex flex-col relative bg-[#212121] min-w-0">
+        <header className="flex items-center justify-between p-4 bg-[#212121] z-30 border-b border-zinc-800/50">
           <div className="flex items-center gap-2">
-            <button 
-              onClick={startVoiceChat}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-amber-500 hover:bg-amber-600/10 transition-all text-[11px] font-bold uppercase tracking-wider border border-amber-600/20"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" x2="12" y1="19" y2="22"></line></svg>
-              Voice Mode
+            <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 hover:bg-white/5 rounded-lg text-zinc-400">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
             </button>
-            <button 
-              onClick={clearMessages}
-              disabled={!activeThread?.messages.length}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 transition-all text-[11px] font-medium disabled:opacity-0"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
-            </button>
+            <div className="font-semibold text-lg truncate">Tanzil AI <span className="text-zinc-500 font-normal text-xs bg-zinc-800 px-2 py-0.5 rounded ml-1">v5.0</span></div>
           </div>
-        </div>
+          <button onClick={() => setIsVoiceOpen(true)} className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-zinc-800 hover:bg-zinc-700 transition-all text-xs font-medium">
+             <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>
+             Live Voice
+          </button>
+        </header>
 
-        <div ref={scrollRef} className="flex-1 overflow-y-auto scroll-smooth">
-          {activeThread?.messages.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center p-6 text-center">
-              <div className="mb-8 relative">
-                 <div className="w-16 h-16 bg-gradient-to-tr from-amber-600 to-amber-700 rounded-2xl flex items-center justify-center shadow-2xl rotate-3">
-                    <span className="text-xl font-bold text-white -rotate-3">TR</span>
+        <div className="flex-1 overflow-y-auto scrollbar-hide">
+          <div className="max-w-3xl mx-auto w-full px-2">
+            {threads.find(t => t.id === activeThreadId)?.messages.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center min-h-[70vh] text-center space-y-8 px-4 py-12">
+                 <div className="w-24 h-24 rounded-3xl overflow-hidden shadow-2xl bg-zinc-800 border-2 border-zinc-700 p-1">
+                   <img src={TANZIL_AVATAR_BASE64} className="w-full h-full object-cover rounded-2xl" alt="Tanzil AI" />
+                 </div>
+                 <h1 className="text-3xl md:text-4xl font-bold text-zinc-100">Assalam-o-Alaikum!</h1>
+                 <p className="text-zinc-400 max-w-md">I am your Digital Assistant. How can I help you today? History is saved locally in your browser.</p>
+                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full max-w-xl">
+                    {[
+                      {label: 'Graphic Design Request', icon: '🎨', m: 'graphic'},
+                      {label: 'Build a Website Preview', icon: '💻', m: 'web'},
+                      {label: 'General Conversation', icon: '🤝', m: 'chat'},
+                      {label: 'اردو میں بات چیت کریں', icon: '🇵🇰', m: 'chat'}
+                    ].map(t => (
+                      <button key={t.label} onClick={() => { setInput(t.label); setMode(t.m as any); }} className="p-5 rounded-2xl border border-zinc-800 bg-zinc-900/50 text-sm font-medium hover:border-zinc-600 transition-all flex items-center justify-between text-left group">
+                        <span>{t.label}</span>
+                        <span className="opacity-40 group-hover:opacity-100 transition-opacity">{t.icon}</span>
+                      </button>
+                    ))}
                  </div>
               </div>
-              <h1 className="text-2xl font-semibold mb-1 text-zinc-100">Tanzil ur Rehman</h1>
-              <p className="text-zinc-500 mb-12 text-sm font-light tracking-wide italic">Digital Twin • Silent Dignity</p>
-              
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-xl w-full px-4">
-                {['السلام علیکم', 'Tell me about yourself', 'Technology & Deen', 'WordPress expertise'].map((hint) => (
-                  <button
-                    key={hint}
-                    onClick={() => { setInput(hint); }}
-                    className="p-4 rounded-xl border border-white/5 bg-white/[0.02] hover:bg-white/[0.05] text-center sm:text-left transition-all group"
-                  >
-                    <p className="text-sm text-zinc-300 group-hover:text-amber-500 transition-colors">{hint}</p>
-                  </button>
+            ) : (
+              <div className="flex flex-col pb-32">
+                {threads.find(t => t.id === activeThreadId)?.messages.map(m => (
+                  <ChatMessage key={m.id} message={m} theme="dark" assistantAvatarUrl={TANZIL_AVATAR_BASE64} />
                 ))}
-              </div>
-            </div>
-          ) : (
-            <div className="pb-40">
-              {activeThread?.messages.map((m) => (
-                <ChatMessage key={m.id} message={m} />
-              ))}
-              {isLoading && activeThread?.messages.length % 2 !== 0 && (
-                <div className="flex w-full py-8 px-6 md:px-12">
-                  <div className="max-w-3xl mx-auto flex gap-6 w-full">
-                    <div className="w-8 h-8 rounded-lg bg-zinc-800 flex items-center justify-center">
-                      <div className="w-1.5 h-1.5 bg-amber-600 rounded-full animate-pulse"></div>
-                    </div>
-                    <div className="flex-1 space-y-3">
-                      <div className="h-1.5 bg-zinc-800 rounded w-1/12"></div>
-                      <div className="h-2 bg-zinc-800 rounded w-1/2"></div>
-                    </div>
+                {isLoading && (
+                  <div className="flex gap-4 p-6 animate-pulse opacity-50">
+                    <div className="w-8 h-8 rounded-lg bg-zinc-800"></div>
+                    <div className="flex-1 space-y-3"><div className="h-4 bg-zinc-800 rounded w-1/4"></div><div className="h-4 bg-zinc-800 rounded w-full"></div></div>
                   </div>
-                </div>
-              )}
-            </div>
-          )}
+                )}
+                <div ref={scrollBottomRef} />
+              </div>
+            )}
+          </div>
         </div>
 
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-[#121212] via-[#121212] to-transparent pt-12 pb-8">
-          <div className="max-w-3xl mx-auto px-6">
-            <div className="relative flex items-center">
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-[#212121] via-[#212121] to-transparent pt-12 pb-6 px-4">
+          <div className="max-w-3xl mx-auto space-y-4">
+            <div className="flex flex-col items-center gap-2">
+                <div className="flex items-center gap-2">
+                    <button onClick={() => setMode('chat')} className={`px-4 py-1.5 rounded-full text-xs font-semibold ${mode === 'chat' ? 'bg-white text-black' : 'text-zinc-500 hover:text-white'}`}>Chat</button>
+                    <button onClick={() => setMode('graphic')} className={`px-4 py-1.5 rounded-full text-xs font-semibold relative ${mode === 'graphic' ? 'bg-orange-600 text-white' : 'text-zinc-500 hover:text-white'}`}>
+                      Design <span className="ml-1 text-[10px] bg-black/20 px-1 rounded">{2 - usage.count}/2</span>
+                    </button>
+                    <button onClick={() => setMode('web')} className={`px-4 py-1.5 rounded-full text-xs font-semibold relative ${mode === 'web' ? 'bg-blue-600 text-white' : 'text-zinc-500 hover:text-white'}`}>
+                      Web <span className="ml-1 text-[10px] bg-black/20 px-1 rounded">{2 - usage.count}/2</span>
+                    </button>
+                </div>
+                {usage.count > 0 && resetLabel && (
+                  <div className="text-[10px] text-zinc-500 font-mono flex items-center gap-1">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                    Reset in: {resetLabel}
+                  </div>
+                )}
+            </div>
+
+            <div className="relative flex items-end w-full bg-[#2f2f2f] rounded-[28px] border border-zinc-700 shadow-2xl p-2.5 pl-5 pr-2.5">
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSend();
-                  }
-                }}
+                onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSend())}
+                placeholder={mode === 'chat' ? "Message Tanzil AI..." : `Request a ${mode} project (Quota: ${2 - usage.count} left)...`}
+                className="w-full bg-transparent border-none focus:ring-0 text-zinc-100 placeholder-zinc-500 py-3 resize-none max-h-[200px] text-base"
                 rows={1}
-                placeholder="Message Tanzil..."
-                className="w-full bg-[#1c1c1c] text-zinc-200 rounded-2xl py-4 pl-6 pr-14 focus:outline-none focus:ring-1 focus:ring-zinc-700 border border-white/[0.03] resize-none shadow-xl"
-                style={{ minHeight: '56px', maxHeight: '200px' }}
                 onInput={(e) => {
                   const target = e.target as HTMLTextAreaElement;
-                  target.style.height = 'inherit';
-                  target.style.height = `${target.scrollHeight}px`;
+                  target.style.height = 'auto';
+                  target.style.height = target.scrollHeight + 'px';
                 }}
               />
-              <button
-                onClick={handleSend}
-                disabled={!input.trim() || isLoading}
-                className={`absolute right-3 p-2 rounded-xl transition-all ${
-                  input.trim() && !isLoading ? 'bg-amber-600 text-white hover:bg-amber-500' : 'text-zinc-600'
-                }`}
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12 7-7 7 7"></path><path d="M12 19V5"></path></svg>
+              <button onClick={handleSend} disabled={!input.trim() || isLoading} className={`p-2.5 rounded-full transition-all shrink-0 mb-1 ${input.trim() && !isLoading ? 'bg-white text-black' : 'text-zinc-600'}`}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="m5 12 7-7 7 7M12 19V5"/></svg>
               </button>
             </div>
           </div>
         </div>
+
+        <VoiceMode 
+          isOpen={isVoiceOpen} 
+          onClose={() => setIsVoiceOpen(false)} 
+          status={voiceStatus} 
+          transcript={voiceTranscript} 
+          avatarUrl={TANZIL_AVATAR_BASE64} 
+        />
       </main>
     </div>
   );

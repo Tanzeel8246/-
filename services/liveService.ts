@@ -21,7 +21,7 @@ export class LiveAudioManager {
   constructor(private systemInstruction: string) {}
 
   async start(callbacks: LiveSessionCallbacks) {
-    const ai = new GoogleGenAI({ apiKey: (process.env as any).API_KEY });
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     
     this.inputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
     this.outputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
@@ -35,7 +35,6 @@ export class LiveAudioManager {
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: {
-          // 'Fenrir' is a deep, clearly masculine voice.
           voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Fenrir' } },
         },
         systemInstruction: this.systemInstruction,
@@ -50,6 +49,7 @@ export class LiveAudioManager {
           scriptProcessor.onaudioprocess = (e) => {
             const inputData = e.inputBuffer.getChannelData(0);
             const pcmBlob = this.createBlob(inputData);
+            // CRITICAL: Ensure data is sent only after the session promise resolves
             this.sessionPromise?.then((session) => {
               session.sendRealtimeInput({ media: pcmBlob });
             });
@@ -70,6 +70,7 @@ export class LiveAudioManager {
           const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
           if (base64Audio && this.outputAudioContext) {
             this.nextStartTime = Math.max(this.nextStartTime, this.outputAudioContext.currentTime);
+            // Use custom decodeAudioData for raw PCM as per guidelines
             const audioBuffer = await this.decodeAudioData(this.decodeBase64(base64Audio), this.outputAudioContext, 24000, 1);
             const source = this.outputAudioContext.createBufferSource();
             source.buffer = audioBuffer;
@@ -106,14 +107,16 @@ export class LiveAudioManager {
   }
 
   private createBlob(data: Float32Array): Blob {
-    const int16 = new Int16Array(data.length);
-    for (let i = 0; i < data.length; i++) int16[i] = data[i] * 32768;
+    const l = data.length;
+    const int16 = new Int16Array(l);
+    for (let i = 0; i < l; i++) int16[i] = data[i] * 32768;
     return {
       data: this.encodeBase64(new Uint8Array(int16.buffer)),
       mimeType: 'audio/pcm;rate=16000',
     };
   }
 
+  // Manual implementation of base64 decoding as per guidelines
   private decodeBase64(base64: string) {
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
@@ -121,12 +124,14 @@ export class LiveAudioManager {
     return bytes;
   }
 
+  // Manual implementation of base64 encoding as per guidelines
   private encodeBase64(bytes: Uint8Array) {
     let binary = '';
     for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
     return btoa(binary);
   }
 
+  // Custom audio decoding for raw PCM bytes from the API
   private async decodeAudioData(data: Uint8Array, ctx: AudioContext, sampleRate: number, numChannels: number): Promise<AudioBuffer> {
     const dataInt16 = new Int16Array(data.buffer);
     const frameCount = dataInt16.length / numChannels;

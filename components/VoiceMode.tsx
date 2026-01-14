@@ -6,9 +6,12 @@ interface VoiceModeProps {
   onClose: () => void;
   status: 'connecting' | 'listening' | 'speaking' | 'idle';
   transcript: string;
+  avatarUrl?: string;
 }
 
-const VoiceMode: React.FC<VoiceModeProps> = ({ isOpen, onClose, status, transcript }) => {
+const VoiceMode: React.FC<VoiceModeProps> = ({ isOpen, onClose, status, transcript, avatarUrl }) => {
+  const [imageError, setImageError] = useState(false);
+
   if (!isOpen) return null;
 
   return (
@@ -24,21 +27,28 @@ const VoiceMode: React.FC<VoiceModeProps> = ({ isOpen, onClose, status, transcri
         <div className="relative">
           {/* Animated Circles */}
           <div className={`absolute inset-0 bg-amber-600/20 rounded-full blur-3xl transition-all duration-1000 ${status === 'speaking' ? 'scale-150 opacity-100' : 'scale-100 opacity-50'}`}></div>
-          <div className={`w-32 h-32 rounded-full border-2 flex items-center justify-center transition-all duration-500 ${
+          <div className={`w-32 h-32 md:w-40 md:h-40 rounded-full border-2 flex items-center justify-center transition-all duration-500 overflow-hidden bg-zinc-900 ${
             status === 'speaking' ? 'border-amber-500 scale-110 shadow-[0_0_50px_rgba(217,119,6,0.3)]' : 'border-zinc-800'
           }`}>
-             <div className={`w-16 h-16 rounded-full bg-amber-600 flex items-center justify-center shadow-2xl ${status === 'speaking' ? 'animate-pulse' : ''}`}>
-                <span className="text-xl font-bold text-white">TR</span>
-             </div>
+             {!imageError ? (
+               <img 
+                 src={avatarUrl} 
+                 alt="Tanzeel ur Rehman voice mode" 
+                 className={`w-full h-full object-cover transition-transform duration-1000 ${status === 'speaking' ? 'scale-110' : 'scale-100'}`}
+                 onError={() => setImageError(true)}
+               />
+             ) : (
+               <span className="text-4xl font-bold text-amber-600">TR</span>
+             )}
           </div>
         </div>
 
         <div className="space-y-4">
-          <h2 className="text-2xl font-semibold text-zinc-100 uppercase tracking-widest text-sm">
-            {status === 'connecting' ? 'Connecting...' : status === 'listening' ? 'Listening' : status === 'speaking' ? 'Tanzil is speaking' : 'Ready'}
+          <h2 className="text-zinc-100 font-bold uppercase tracking-[0.4em] text-xs">
+            {status === 'connecting' ? 'Connecting...' : status === 'listening' ? 'Listening' : status === 'speaking' ? 'Tanzeel is speaking' : 'Ready'}
           </h2>
           <div className="h-24 overflow-hidden">
-            <p className="text-zinc-400 text-lg font-light italic leading-relaxed animate-in fade-in slide-in-from-bottom-2">
+            <p className="text-zinc-400 text-lg md:text-xl font-light italic leading-relaxed animate-in fade-in slide-in-from-bottom-2">
               {transcript || "Waiting for your voice..."}
             </p>
           </div>
@@ -61,8 +71,8 @@ const VoiceMode: React.FC<VoiceModeProps> = ({ isOpen, onClose, status, transcri
         </div>
       </div>
       
-      <div className="absolute bottom-12 text-zinc-600 text-[10px] tracking-[0.3em] uppercase">
-        Encrypted Voice Session
+      <div className="absolute bottom-12 text-zinc-600 text-[9px] tracking-[0.3em] uppercase font-medium">
+        Secure Real-time Audio
       </div>
     </div>
   );
